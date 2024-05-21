@@ -361,10 +361,15 @@ struct obs_core_video {
 	pthread_mutex_t task_mutex;
 	struct deque tasks;
 
+	pthread_mutex_t encoder_group_mutex;
+	DARRAY(obs_weak_encoder_t *) ready_encoder_groups;
+
 	pthread_mutex_t mixes_mutex;
 	DARRAY(struct obs_core_video_mix *) mixes;
 	struct obs_core_video_mix *main_mix;
 };
+
+extern void add_ready_encoder_group(obs_encoder_t *encoder);
 
 struct audio_monitor;
 
@@ -751,7 +756,6 @@ struct obs_source {
 	volatile bool timing_set;
 	volatile uint64_t timing_adjust;
 	uint64_t resample_offset;
-	uint64_t last_audio_ts;
 	uint64_t next_audio_ts_min;
 	uint64_t next_audio_sys_ts_min;
 	uint64_t last_frame_ts;
@@ -1076,6 +1080,15 @@ struct caption_text {
 	struct caption_text *next;
 };
 
+struct caption_track_data {
+	struct caption_text *caption_head;
+	struct caption_text *caption_tail;
+	pthread_mutex_t caption_mutex;
+	double caption_timestamp;
+	double last_caption_timestamp;
+	struct deque caption_data;
+};
+
 struct pause_data {
 	pthread_mutex_t mutex;
 	uint64_t last_video_ts;
@@ -1089,6 +1102,20 @@ extern bool audio_pause_check(struct pause_data *pause, struct audio_data *data,
 			      size_t sample_rate);
 extern void pause_reset(struct pause_data *pause);
 
+enum keyframe_group_track_status {
+	KEYFRAME_TRACK_STATUS_NOT_SEEN = 0,
+	KEYFRAME_TRACK_STATUS_SEEN = 1,
+	KEYFRAME_TRACK_STATUS_SKIPPED = 2,
+};
+
+struct keyframe_group_data {
+	uintptr_t group_id;
+	int64_t pts;
+	uint32_t required_tracks;
+	enum keyframe_group_track_status
+		seen_on_track[MAX_OUTPUT_VIDEO_ENCODERS];
+};
+
 struct obs_output {
 	struct obs_context_data context;
 	struct obs_output_info info;
@@ -1097,6 +1124,7 @@ struct obs_output {
 	bool owns_info_id;
 
 	bool received_video[MAX_OUTPUT_VIDEO_ENCODERS];
+	DARRAY(struct keyframe_group_data) keyframe_group_tracking;
 	bool received_audio;
 	volatile bool data_active;
 	volatile bool end_data_capture_thread_active;
@@ -1152,12 +1180,8 @@ struct obs_output {
 	struct video_scale_info video_conversion;
 	struct audio_convert_info audio_conversion;
 
-	pthread_mutex_t caption_mutex;
-	double caption_timestamp;
-	struct caption_text *caption_head;
-	struct caption_text *caption_tail;
-
-	struct deque caption_data;
+	// captions are output per track
+	struct caption_track_data *caption_tracks[MAX_OUTPUT_VIDEO_ENCODERS];
 
 	bool valid;
 
@@ -1216,6 +1240,13 @@ struct encoder_callback {
 	bool sent_first_packet;
 	void (*new_packet)(void *param, struct encoder_packet *packet);
 	void *param;
+};
+
+struct encoder_group {
+	pthread_mutex_t mutex;
+	uint32_t encoders_added;
+	uint32_t encoders_started;
+	uint64_t start_timestamp;
 };
 
 struct obs_encoder {
@@ -1281,6 +1312,9 @@ struct obs_encoder {
 	int64_t offset_usec;
 	uint64_t first_raw_ts;
 	uint64_t start_ts;
+
+	/* track encoders that are part of a gop-aligned multi track group */
+	struct encoder_group *encoder_group;
 
 	pthread_mutex_t outputs_mutex;
 	DARRAY(obs_output_t *) outputs;

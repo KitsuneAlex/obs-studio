@@ -833,18 +833,11 @@ void OBSBasic::Save(const char *file)
 	}
 
 	if (api) {
-		if (safeModeModuleData) {
-			/* If we're in Safe Mode and have retained unloaded
-			 * plugin data, update the existing data object instead
-			 * of creating a new one. */
-			api->on_save(safeModeModuleData);
-			obs_data_set_obj(saveData, "modules",
-					 safeModeModuleData);
-		} else {
-			OBSDataAutoRelease moduleObj = obs_data_create();
-			api->on_save(moduleObj);
-			obs_data_set_obj(saveData, "modules", moduleObj);
-		}
+		if (!collectionModuleData)
+			collectionModuleData = obs_data_create();
+
+		api->on_save(collectionModuleData);
+		obs_data_set_obj(saveData, "modules", collectionModuleData);
 	}
 
 	if (lastOutputResolution) {
@@ -1133,11 +1126,9 @@ void OBSBasic::LoadData(obs_data_t *data, const char *file)
 	if (api)
 		api->on_preload(modulesObj);
 
-	if (safe_mode || disable_3p_plugins) {
-		/* Keep a reference to "modules" data so plugins that are not
-		 * loaded do not have their collection specific data lost. */
-		safeModeModuleData = obs_data_get_obj(data, "modules");
-	}
+	/* Keep a reference to "modules" data so plugins that are not loaded do
+	 * not have their collection specific data lost. */
+	collectionModuleData = obs_data_get_obj(data, "modules");
 
 	OBSDataArrayAutoRelease sceneOrder =
 		obs_data_get_array(data, "scene_order");
@@ -1462,10 +1453,11 @@ static const double scaled_vals[] = {1.0,         1.25, (1.0 / 0.75), 1.5,
 				     2.5,         2.75, 3.0,          0.0};
 
 extern void CheckExistingCookieId();
-#if OBS_RELEASE_CANDIDATE == 0 && OBS_BETA == 0
-#define DEFAULT_CONTAINER "mkv"
-#elif defined(__APPLE__)
+
+#ifdef __APPLE__
 #define DEFAULT_CONTAINER "fragmented_mov"
+#elif OBS_RELEASE_CANDIDATE == 0 && OBS_BETA == 0
+#define DEFAULT_CONTAINER "mkv"
 #else
 #define DEFAULT_CONTAINER "fragmented_mp4"
 #endif
@@ -1938,6 +1930,8 @@ void OBSBasic::AddVCamButton()
 			    QStringLiteral("configIconSmall"),
 			    &OBSBasic::VCamConfigButtonClicked);
 	vcamButton->insert(2);
+	vcamButton->first()->setSizePolicy(QSizePolicy::Minimum,
+					   QSizePolicy::Minimum);
 }
 
 void OBSBasic::ResetOutputs()
@@ -3345,16 +3339,6 @@ void OBSBasic::RenameSources(OBSSource source, QString newName,
 {
 	RenameListValues(ui->scenes, newName, prevName);
 
-	for (size_t i = 0; i < volumes.size(); i++) {
-		if (volumes[i]->GetName().compare(prevName) == 0)
-			volumes[i]->SetName(newName);
-	}
-
-	for (size_t i = 0; i < projectors.size(); i++) {
-		if (projectors[i]->GetSource() == source)
-			projectors[i]->RenameProjector(prevName, newName);
-	}
-
 	if (vcamConfig.type == VCamOutputType::SourceOutput &&
 	    prevName == QString::fromStdString(vcamConfig.source))
 		vcamConfig.source = newName.toStdString();
@@ -3839,14 +3823,8 @@ void OBSBasic::VolControlContextMenu()
 
 	copyFiltersAction.setEnabled(obs_source_filter_count(vol->GetSource()) >
 				     0);
-
-	OBSSourceAutoRelease source =
-		obs_weak_source_get_source(copyFiltersSource);
-	if (source) {
-		pasteFiltersAction.setEnabled(true);
-	} else {
-		pasteFiltersAction.setEnabled(false);
-	}
+	pasteFiltersAction.setEnabled(
+		!obs_weak_source_expired(copyFiltersSource));
 
 	QMenu popup;
 	vol->SetContextMenu(&popup);
@@ -5008,7 +4986,7 @@ void OBSBasic::ClearSceneData()
 		outputHandler->UpdateVirtualCamOutputSource();
 	}
 
-	safeModeModuleData = nullptr;
+	collectionModuleData = nullptr;
 	lastScene = nullptr;
 	swapScene = nullptr;
 	programScene = nullptr;
@@ -10726,6 +10704,8 @@ void OBSBasic::PauseRecording()
 	obs_output_t *output = outputHandler->fileOutput;
 
 	if (obs_output_pause(output, true)) {
+		os_atomic_set_bool(&recording_paused, true);
+
 		pause->setAccessibleName(QTStr("Basic.Main.UnpauseRecording"));
 		pause->setToolTip(QTStr("Basic.Main.UnpauseRecording"));
 		pause->blockSignals(true);
@@ -10747,8 +10727,6 @@ void OBSBasic::PauseRecording()
 			trayIcon->setIcon(QIcon::fromTheme("obs-tray-paused",
 							   trayIconFile));
 		}
-
-		os_atomic_set_bool(&recording_paused, true);
 
 		auto replay = replayBufferButton ? replayBufferButton->second()
 						 : nullptr;
@@ -10772,6 +10750,8 @@ void OBSBasic::UnpauseRecording()
 	obs_output_t *output = outputHandler->fileOutput;
 
 	if (obs_output_pause(output, false)) {
+		os_atomic_set_bool(&recording_paused, false);
+
 		pause->setAccessibleName(QTStr("Basic.Main.PauseRecording"));
 		pause->setToolTip(QTStr("Basic.Main.PauseRecording"));
 		pause->blockSignals(true);
@@ -10793,8 +10773,6 @@ void OBSBasic::UnpauseRecording()
 			trayIcon->setIcon(QIcon::fromTheme("obs-tray-active",
 							   trayIconFile));
 		}
-
-		os_atomic_set_bool(&recording_paused, false);
 
 		auto replay = replayBufferButton ? replayBufferButton->second()
 						 : nullptr;
