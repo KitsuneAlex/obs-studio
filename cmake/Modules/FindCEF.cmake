@@ -1,7 +1,7 @@
 include(FindPackageHandleStandardArgs)
 
 set(CEF_ROOT_DIR
-    ""
+    "/media/data/sdks/cef"
     CACHE PATH "Path to CEF distributed build")
 
 if(NOT DEFINED CEF_ROOT_DIR OR CEF_ROOT_DIR STREQUAL "")
