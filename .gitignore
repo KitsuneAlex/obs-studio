@@ -30,6 +30,7 @@
 !COPYING
 !INSTALL
 !README.rst
+!build.sh
 
 # Exclude lock files
 *.lock.json
